@@ -1,4 +1,6 @@
 # PunkXros
+ [![PunkXros multiplatform build](https://github.com/gmoican/PunkXros/actions/workflows/main.yml/badge.svg)](https://github.com/gmoican/PunkXros/actions/workflows/main.yml)
+
 
 ![DemoImage](docs/images/Xros.png)
 
