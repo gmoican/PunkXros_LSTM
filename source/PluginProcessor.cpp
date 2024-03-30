@@ -123,7 +123,7 @@ void PunkXrosProcessor::updateDrive()
     
     // Drive section - Compensate level
     auto compLevel = juce::jmap(DRIVE->load(), 0.f, 30.f, 0.f, -15.f);
-    drive.setCompensationLevel(compLevel);
+    driveLevelCompensation.setGainDecibels(compLevel);
 }
 
 void PunkXrosProcessor::updateMix()
@@ -131,16 +131,16 @@ void PunkXrosProcessor::updateMix()
     auto MIX = state.getRawParameterValue("MIX")->load();
     
     // Drive processor - Adjust mix level
-    if (MIX < 50.0)
-        drive.setMixLevel( MIX / 50.0 );
+    if (MIX < 50.f)
+        driveMixGain = MIX / 50.f;
     else
-        drive.setMixLevel(1.0);
+        driveMixGain = 1.f;
     
-    // TODO: Compression processor - Adjust mix level
-    // if (MIX > 50.0)
-    //     compressor.setMixLevel( (100.0 - MIX) / 50.0 );
-    // else
-    //     compressor.setMixLevel(1.0);
+    // Compression processor - Adjust mix level
+    if (MIX > 50.0)
+        compMixGain = (100.f - MIX) / 50.f;
+    else
+        compMixGain = 1.f;
 }
 
 void PunkXrosProcessor::updateEq()
@@ -149,16 +149,18 @@ void PunkXrosProcessor::updateEq()
     auto MIDS = state.getRawParameterValue("MIDS");
     auto HIPASS = state.getRawParameterValue("HIPASS");
     
-    // Drive hi pass
-    drive.setHPFreq(HIPASS->load());
+    double sampleRate = getSampleRate();
     
-    // TODO: Compression low pass
-    // compressor.setLPFreq(LOPASS->load());
+    // Drive hi pass
+    *xrosHPFilter.state = *juce::dsp::IIR::Coefficients<float>::makeHighPass(sampleRate, HIPASS->load());
+    
+    // Compression low pass
+    *xrosLPFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, LOPASS->load());
     
     // Mids boost/cut applied after processing
     auto midsGain = juce::Decibels::decibelsToGain(MIDS->load());
-    double sampleRate = getSampleRate();
-    mids.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, 500.f, 0.8f, midsGain);
+    
+    *mids.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, 500.f, 0.8f, midsGain);
 }
 
 void PunkXrosProcessor::updateState()
@@ -178,14 +180,48 @@ void PunkXrosProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     spec.numChannels = getTotalNumOutputChannels();
     spec.sampleRate = sampleRate;
     
-    mids.prepare(spec);
-    mids.reset();
+    distortedBuffer.setSize(spec.numChannels, spec.maximumBlockSize);
+    compressedBuffer.setSize(spec.numChannels, spec.maximumBlockSize);
     
+    // INPUT LEVEL
     driveLevel.prepare(spec);
     driveLevel.setRampDurationSeconds(0.1);
     
-    // TODO: Add compressorProcessor here
-    drive.prepare(spec);
+    // DISTORTION PROCESSING
+    xrosHPFilter.prepare(spec);
+    
+    preEmphasisEq.prepare(spec);
+    preEmphasisEq.reset();
+    *preEmphasisEq.get<0>().state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf(sampleRate, 300.0f, 1.0f, 0.7f);
+    *preEmphasisEq.get<1>().state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, 280.0f, 1.5f, 0.7f);
+    *preEmphasisEq.get<2>().state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, 800.0f, 2.0f, 0.5f);
+    *preEmphasisEq.get<3>().state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf(sampleRate, 1200.0f, 0.7f, 1.3f);
+    
+    postEmphasisEq.prepare(spec);
+    postEmphasisEq.reset();
+    *postEmphasisEq.get<0>().state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf(sampleRate, 300.0f, 1.0f, 1.3f);
+    *postEmphasisEq.get<1>().state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, 700.0f, 1.0f, 1.3f);
+    *postEmphasisEq.get<2>().state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf(sampleRate, 1200.0f, 0.7f, 0.7f);
+    *postEmphasisEq.get<3>().state = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 4000.0f);
+    
+    distortion.prepare(spec);
+    distortion.functionToUse = saturator;
+    
+    driveLevelCompensation.prepare(spec);
+    driveLevelCompensation.setRampDurationSeconds(0.1);
+    
+    // COMPRESSION PROCESSING
+    xrosLPFilter.prepare(spec);
+    
+    compressor.prepare(spec);
+    compressor.setRatio(4.f);
+    compressor.setAttack(0.5f);
+    compressor.setRelease(60.f);
+    compressor.setThreshold(-20.f);
+    
+    // OUTPUT PROCESSING
+    mids.prepare(spec);
+    mids.reset();
     
     outputLevel.prepare(spec);
     outputLevel.setRampDurationSeconds(0.1);
@@ -243,21 +279,40 @@ void PunkXrosProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     updateState();
     if(on)
     {
-        distortedBuffer.makeCopyOf(buffer);
-        // compressedBuffer.makeCopyOf(buffer);
         
-        // Drive and compression parallel processing
-        drive.processBlock(distortedBuffer);
-        // compressor.processBlock(compressedBuffer);
+        distortedBuffer.makeCopyOf(buffer);
+        compressedBuffer.makeCopyOf(buffer);
+        
+        juce::dsp::AudioBlock<float> distBlock = juce::dsp::AudioBlock<float>(distortedBuffer);
+        juce::dsp::AudioBlock<float> compBlock = juce::dsp::AudioBlock<float>(compressedBuffer);
+    
+        
+        //================= DISTORTION PROCESSING =====================================
+        driveLevel.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
+        xrosHPFilter.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
+        preEmphasisEq.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
+        
+        // TODO: Add oversampling here
+        distortion.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
+        
+        postEmphasisEq.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
+        driveLevelCompensation.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
+        
+        //================ COMPRESSION PROCESSING =====================================
+        driveLevel.process(juce::dsp::ProcessContextReplacing<float>(compBlock));
+        xrosLPFilter.process(juce::dsp::ProcessContextReplacing<float>(compBlock));
+        compressor.process(juce::dsp::ProcessContextReplacing<float>(compBlock));
+        driveLevelCompensation.process(juce::dsp::ProcessContextReplacing<float>(compBlock));
         
         // Sum parallel processes together
-        buffer.clear();
-        for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i) {
-            buffer.addFrom(i, 0, distortedBuffer, i, 0, buffer.getNumSamples());
-            // buffer.addFrom(i, 0, compression.getOutputBuffer(), i, 0, buffer.getNumSamples());
-        }
+        distortedBuffer.applyGain(driveMixGain);
+        compressedBuffer.applyGain(compMixGain);
         
-        // Output processing
+        buffer.makeCopyOf(distortedBuffer);
+        for (auto i = 0; i < buffer.getNumChannels(); ++i)
+            buffer.addFrom(i, 0, compressedBuffer, i, 0, buffer.getNumSamples());
+        
+        //=================== OUTPUT PROCESSING =======================================
         juce::dsp::AudioBlock<float> audioBlock = juce::dsp::AudioBlock<float>(buffer);
         
         mids.process(juce::dsp::ProcessContextReplacing<float>(audioBlock));

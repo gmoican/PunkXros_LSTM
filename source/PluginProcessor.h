@@ -2,8 +2,6 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
-#include "DistortionProcessor.h"
-// #include "CompressionProcessor.h"
 
 #if (MSVC)
 #include "ipps.h"
@@ -13,7 +11,7 @@
 #define DEFAULT_LEVEL 0.0f
 #define DEFAULT_MIX 50.0f
 #define DEFAULT_MIDS 0.0f
-#define DEFAULT_LOPASS 250.0f
+#define DEFAULT_LOPASS 275.0f
 #define DEFAULT_HIPASS 550.0f
 
 //==============================================================================
@@ -75,19 +73,41 @@ public:
 
 private:
     juce::AudioBuffer<float> distortedBuffer;
-    // juce::AudioBuffer<float> compressedBuffer;
+    juce::AudioBuffer<float> compressedBuffer;
     
     juce::AudioProcessorValueTreeState::ParameterLayout createParams();
     using FilterBand = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;
     using WaveShaper = juce::dsp::WaveShaper<float>;
     using Gain = juce::dsp::Gain<float>;
+    using Comp = juce::dsp::Compressor<float>;
     
+    //================= DISTORTION PROCESSING =====================================
+    FilterBand xrosHPFilter;
+    
+    juce::dsp::ProcessorChain<FilterBand, FilterBand, FilterBand, FilterBand> preEmphasisEq, postEmphasisEq;
+    
+    WaveShaper distortion;
+    
+    Gain driveLevelCompensation;
+    
+    //================ COMPRESSION PROCESSING =====================================
+    FilterBand xrosLPFilter;
+    
+    Comp compressor;
+    
+    //=================== OUTPUT PROCESSING =======================================
     FilterBand mids;
-    
-    DistortionProcessor<float> drive;
-    
+        
+    float driveMixGain = 1.f, compMixGain = 1.f;
     Gain driveLevel, outputLevel;
     bool on;
+    
+    // Drive functions
+    static float saturator(float sample) { return tanhClipper( softClipper(sample) ); }
+    
+    static float softClipper(float sample) { return sample / (abs(sample) + 1.f); }
+    
+    static float tanhClipper(float sample) { return 2.f / juce::MathConstants<float>::pi * juce::dsp::FastMathApproximations::tanh(sample); }
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PunkXrosProcessor)
