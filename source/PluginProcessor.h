@@ -7,7 +7,7 @@
 #include "ipps.h"
 #endif
 
-#define DEFAULT_DRIVE 5.0f
+#define DEFAULT_DRIVE 15.0f
 #define DEFAULT_LEVEL 0.0f
 #define DEFAULT_MIX 50.0f
 #define DEFAULT_MIDS 0.0f
@@ -78,28 +78,32 @@ private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParams();
     using FilterBand = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;
     using WaveShaper = juce::dsp::WaveShaper<float>;
-    using Gain = juce::dsp::Gain<float>;
     using Comp = juce::dsp::Compressor<float>;
+    using Oversampling = juce::dsp::Oversampling<float>;
+    using Mixer = juce::dsp::DryWetMixer<float>;
+    
+    //=================== INPUT PROCESSING ========================================
+    float driveGain = 1.f, distGainCompensation = 1.f, compGainCompensation = 1.f;
     
     //================= DISTORTION PROCESSING =====================================
     FilterBand xrosHPFilter;
     
     juce::dsp::ProcessorChain<FilterBand, FilterBand, FilterBand, FilterBand> preEmphasisEq, postEmphasisEq;
     
+    Oversampling distOV { 2, 2, Oversampling::filterHalfBandPolyphaseIIR, true, false};
     WaveShaper distortion;
-    
-    Gain driveLevelCompensation;
-    
+        
     //================ COMPRESSION PROCESSING =====================================
     FilterBand xrosLPFilter;
     
     Comp compressor;
+    Mixer mixer;
     
     //=================== OUTPUT PROCESSING =======================================
     FilterBand mids;
         
     float driveMixGain = 1.f, compMixGain = 1.f;
-    Gain driveLevel, outputLevel;
+    float outputLevel = 1.f;
     bool on;
     
     // Drive functions

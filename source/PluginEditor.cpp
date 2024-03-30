@@ -47,7 +47,7 @@ void PunkXrosEditor::paint (juce::Graphics& g)
     }
     
     // ========== Parameter knobs angle in radians ==================
-    auto driveRadians = juce::jmap(driveKnob.getValue(), 0.0, 30.0, -150.0, 150.0) * DEG2RADS;
+    auto driveRadians = juce::jmap(driveKnob.getValue(), 0.0, 45.0, -150.0, 150.0) * DEG2RADS;
     auto levelRadians = juce::jmap(levelKnob.getValue(), -18.0, 18.0, -150.0, 150.0) * DEG2RADS;
     auto mixRadians = juce::jmap(mixKnob.getValue(), 0.0, 100.0, -150.0, 150.0) * DEG2RADS;
     auto midsRadians = juce::jmap(midsKnob.getValue(), -10.0, 10.0, -150.0, 150.0) * DEG2RADS;
