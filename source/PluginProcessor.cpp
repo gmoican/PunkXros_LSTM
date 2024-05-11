@@ -90,13 +90,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout PunkXrosProcessor::createPar
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
         
-    params.push_back(std::make_unique<juce::AudioParameterBool>("ONOFF", "On/Off", true));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("DRIVE", "Drive", juce::NormalisableRange<float>(0.0f, 45.0f, 0.1f), DEFAULT_DRIVE, ""));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("LEVEL", "Output level", juce::NormalisableRange<float>(-18.0f, 18.0f, 0.1f), DEFAULT_LEVEL, "dB"));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("MIX", "Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), DEFAULT_MIX, "%"));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("MIDS", "Mids gain", juce::NormalisableRange<float>(-10.0f, 10.0f, 0.1f), DEFAULT_MIDS, "dB"));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("LOPASS", "LowPass frequency", juce::NormalisableRange<float>(50.0f, 500.0f, 0.1f), DEFAULT_LOPASS, "Hz"));
-    params.push_back(std::make_unique<juce::AudioParameterFloat>("HIPASS", "HighPass frequency", juce::NormalisableRange<float>(100.0f, 1000.0f, 0.1f), DEFAULT_HIPASS, "Hz"));
+    params.push_back(std::make_unique<juce::AudioParameterBool>(juce::ParameterID("ONOFF", 0), "On/Off", true));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("DRIVE", 0), "Drive", juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), DEFAULT_DRIVE, ""));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("LEVEL", 0), "Output level", juce::NormalisableRange<float>(-18.0f, 18.0f, 0.1f), DEFAULT_LEVEL, "dB"));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("MIX", 0), "Mix", juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), DEFAULT_MIX, "%"));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("MIDS", 0), "Mids gain", juce::NormalisableRange<float>(-10.0f, 10.0f, 0.1f), DEFAULT_MIDS, "dB"));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("LOPASS", 0), "LowPass frequency", juce::NormalisableRange<float>(50.0f, 500.0f, 0.1f), DEFAULT_LOPASS, "Hz"));
+    params.push_back(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("HIPASS", 0), "HighPass frequency", juce::NormalisableRange<float>(100.0f, 1000.0f, 0.1f), DEFAULT_HIPASS, "Hz"));
         
     return { params.begin(), params.end() };
 }
@@ -116,12 +116,9 @@ void PunkXrosProcessor::updateLevel()
 
 void PunkXrosProcessor::updateDrive()
 {
-    auto DRIVE = state.getRawParameterValue("DRIVE")->load();
-    driveGain = juce::Decibels::decibelsToGain(DRIVE);
-    
-    auto driveCompLevel = juce::jmap(DRIVE, 0.f, 45.f, 0.f, -20.f);
-    distGainCompensation = juce::Decibels::decibelsToGain(driveCompLevel);
-    compGainCompensation = juce::Decibels::decibelsToGain(driveCompLevel - 6.f);
+    driveGain = state.getRawParameterValue("DRIVE")->load();
+    compGain = juce::Decibels::decibelsToGain( juce::jmap(driveGain, 0.f, 30.f) );
+    compensationGain = juce::Decibels::decibelsToGain( juce::jmap(driveGain, 0.f, -12.f) );
 }
 
 void PunkXrosProcessor::updateMix()
@@ -181,30 +178,21 @@ void PunkXrosProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // DISTORTION PROCESSING
     xrosHPFilter.prepare(spec);
     
-    preEmphasisEq.prepare(spec);
-    preEmphasisEq.reset();
-    *preEmphasisEq.get<0>().state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf(sampleRate, 300.0f, 1.0f, 0.7f);
-    *preEmphasisEq.get<1>().state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, 280.0f, 1.5f, 0.7f);
-    *preEmphasisEq.get<2>().state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, 800.0f, 2.0f, 0.5f);
-    *preEmphasisEq.get<3>().state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf(sampleRate, 1200.0f, 0.7f, 1.3f);
-    
-    postEmphasisEq.prepare(spec);
-    postEmphasisEq.reset();
-    *postEmphasisEq.get<0>().state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf(sampleRate, 300.0f, 1.0f, 1.3f);
-    *postEmphasisEq.get<1>().state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter(sampleRate, 700.0f, 1.0f, 1.3f);
-    *postEmphasisEq.get<2>().state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf(sampleRate, 1200.0f, 0.7f, 0.7f);
-    *postEmphasisEq.get<3>().state = *juce::dsp::IIR::Coefficients<float>::makeLowPass(sampleRate, 6000.0f);
-    
-    distortion.prepare(spec);
-    distortion.functionToUse = saturator;
+    // Read json model
+    juce::MemoryInputStream jsonInputStream(BinaryData::b3k_model_json, BinaryData::b3k_model_jsonSize, false);
+    nlohmann::json weights_json = nlohmann::json::parse(jsonInputStream.readEntireStreamAsString().toStdString());
+    LSTM1.reset();
+    LSTM1.load_json(weights_json);
+    LSTM2.reset();
+    LSTM2.load_json(weights_json);
         
     // COMPRESSION PROCESSING
     xrosLPFilter.prepare(spec);
     
     compressor.prepare(spec);
     compressor.setRatio(4.f);
-    compressor.setAttack(2.0f);
-    compressor.setRelease(60.f);
+    compressor.setAttack(30.0f);
+    compressor.setRelease(40.f);
     compressor.setThreshold(-18.f);
     
     mixer.prepare(spec);
@@ -267,7 +255,6 @@ void PunkXrosProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     updateState();
     if(on)
     {
-        buffer.applyGain(driveGain);
         distortedBuffer.makeCopyOf(buffer);
         compressedBuffer.makeCopyOf(buffer);
         
@@ -277,26 +264,24 @@ void PunkXrosProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         
         //================= DISTORTION PROCESSING =====================================
         xrosHPFilter.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
-        preEmphasisEq.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
         
-        juce::dsp::ProcessContextReplacing<float> distCtx(distBlock);
-        auto& inputBlock = distCtx.getInputBlock();
-        distOV.processSamplesUp(inputBlock);
-        distortion.process(distCtx);
-        auto& outputBlock = distCtx.getOutputBlock();
-        distOV.processSamplesDown(outputBlock);
-        
-        postEmphasisEq.process(juce::dsp::ProcessContextReplacing<float>(distBlock));
-        distortedBuffer.applyGain(distGainCompensation);
+        for (int ch = 0; ch < distortedBuffer.getNumChannels(); ++ch) {
+            if (ch == 0)
+                LSTM1.process(distortedBuffer.getReadPointer(ch), distortedBuffer.getWritePointer(ch), driveGain, distortedBuffer.getNumSamples());
+            else
+                LSTM2.process(distortedBuffer.getReadPointer(ch), distortedBuffer.getWritePointer(ch), driveGain, distortedBuffer.getNumSamples());
+        }
         
         //================ COMPRESSION PROCESSING =====================================
         xrosLPFilter.process(juce::dsp::ProcessContextReplacing<float>(compBlock));
         
         mixer.pushDrySamples(compBlock);
-        compressor.process(juce::dsp::ProcessContextReplacing<float>(compBlock));
-        mixer.mixWetSamples(compBlock);
         
-        compressedBuffer.applyGain(compGainCompensation);
+        compressedBuffer.applyGain(compGain);
+        compressor.process(juce::dsp::ProcessContextReplacing<float>(compBlock));
+        compressedBuffer.applyGain(compensationGain);
+        
+        mixer.mixWetSamples(compBlock);
         
         //================== SUM PARALLEL BUFFERS =====================================
         distortedBuffer.applyGain(driveMixGain);

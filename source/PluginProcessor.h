@@ -2,12 +2,13 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
+#include "RTNeuralLSTM.h"
 
 #if (MSVC)
 #include "ipps.h"
 #endif
 
-#define DEFAULT_DRIVE 15.0f
+#define DEFAULT_DRIVE 0.5f
 #define DEFAULT_LEVEL 0.0f
 #define DEFAULT_MIX 50.0f
 #define DEFAULT_MIDS 0.0f
@@ -77,22 +78,18 @@ private:
     
     juce::AudioProcessorValueTreeState::ParameterLayout createParams();
     using FilterBand = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>>;
-    using WaveShaper = juce::dsp::WaveShaper<float>;
     using Comp = juce::dsp::Compressor<float>;
-    using Oversampling = juce::dsp::Oversampling<float>;
     using Mixer = juce::dsp::DryWetMixer<float>;
     
     //=================== INPUT PROCESSING ========================================
-    float driveGain = 1.f, distGainCompensation = 1.f, compGainCompensation = 1.f;
+    float driveGain = DEFAULT_DRIVE, compGain, compensationGain;
     
     //================= DISTORTION PROCESSING =====================================
     FilterBand xrosHPFilter;
     
-    juce::dsp::ProcessorChain<FilterBand, FilterBand, FilterBand, FilterBand> preEmphasisEq, postEmphasisEq;
+    RT_LSTM LSTM1;
+    RT_LSTM LSTM2;
     
-    Oversampling distOV { 2, 2, Oversampling::filterHalfBandPolyphaseIIR, true, false};
-    WaveShaper distortion;
-        
     //================ COMPRESSION PROCESSING =====================================
     FilterBand xrosLPFilter;
     
@@ -106,13 +103,6 @@ private:
     float outputLevel = 1.f;
     bool on;
     
-    // Drive functions
-    static float saturator(float sample) { return tanhClipper( softClipper(sample) ); }
-    
-    static float softClipper(float sample) { return sample / (abs(sample) + 1.f); }
-    
-    static float tanhClipper(float sample) { return 2.f / juce::MathConstants<float>::pi * juce::dsp::FastMathApproximations::tanh(sample); }
-
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PunkXrosProcessor)
 };
