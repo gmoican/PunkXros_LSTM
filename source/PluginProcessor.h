@@ -69,8 +69,6 @@ public:
     void updateMix();
     void updateEq();
     void updateState();
-    
-    void process(float* samples, int numSamples);
 
 private:
     juce::AudioBuffer<float> distortedBuffer;
